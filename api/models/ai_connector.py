@@ -2,15 +2,16 @@
 AI Connector Module.
 Connects to Google Gemini API using google-genai SDK to parse raw OCR result text
 into structured FASResultPayload with dynamic Course Modules and Student Results (No GPA).
-Includes an offline heuristic parser fallback when no API key is configured.
+Includes an offline heuristic parser fallback when Gemini is unavailable.
 """
 
 import os
 import re
 import json
+import logging
 from typing import List, Optional, Tuple, Dict
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 from pydantic import ValidationError
 from .schemas import (
     FASResultPayload,
@@ -20,6 +21,8 @@ from .schemas import (
     CourseGrade,
     parse_student_index
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AIConnectorException(Exception):
@@ -33,7 +36,7 @@ class AIConnector:
     two validated tables: Dynamic Course Modules and Student Results (Regular + Repeat).
     """
 
-    DEFAULT_MODEL = "gemini-2.5-flash"
+    DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
     def __init__(
         self,
@@ -42,7 +45,11 @@ class AIConnector:
         allow_offline_fallback: bool = True
     ):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
-        self.model_name = model_name or self.DEFAULT_MODEL
+        self.model_name = (
+            (model_name or "").strip()
+            or os.getenv("GEMINI_MODEL", "").strip()
+            or self.DEFAULT_MODEL
+        )
         self.allow_offline_fallback = allow_offline_fallback
 
         self.client = None
@@ -91,7 +98,6 @@ class AIConnector:
                     system_instruction=self.system_instruction,
                     response_mime_type="application/json",
                     response_schema=FASResultPayload,
-                    temperature=0.1
                 )
             )
             return FASResultPayload.model_validate_json(response.text)
@@ -257,11 +263,16 @@ class AIConnector:
             if self.client:
                 try:
                     payload = self.parse_with_gemini(chunk_text)
-                except Exception as e:
-                    if self.allow_offline_fallback:
-                        payload = self.parse_with_heuristics(chunk_text, is_repeat_default=is_repeat_chunk)
-                    else:
-                        raise e
+                except Exception as exc:
+                    if not self.allow_offline_fallback:
+                        raise
+                    cause = exc.__cause__ or exc
+                    reason = f"HTTP {cause.code}" if isinstance(cause, errors.APIError) else type(cause).__name__
+                    logger.warning(
+                        "Gemini model %s failed for pages %d–%d (%s). Using offline heuristics.",
+                        self.model_name, chunk[0][0], chunk[-1][0], reason,
+                    )
+                    payload = self.parse_with_heuristics(chunk_text, is_repeat_default=is_repeat_chunk)
             else:
                 payload = self.parse_with_heuristics(chunk_text, is_repeat_default=is_repeat_chunk)
 

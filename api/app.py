@@ -52,7 +52,7 @@ def root():
 @app.post("/api/v1/extract-results", tags=["Extraction"], response_model=PipelineResult)
 async def extract_results(
     file: UploadFile = File(..., description="FAS Result PDF file to process"),
-    model_name: Optional[str] = Form(default=None, description="Gemini model name (default: gemini-2.5-flash)"),
+    model_name: Optional[str] = Form(default=None, description="Overrides the configured Gemini model"),
     ocr_dpi: int = Form(default=300, description="DPI for scanning pages (default: 300)"),
     base_export_name: Optional[str] = Form(default=None, description="Custom prefix for exported CSVs")
 ):

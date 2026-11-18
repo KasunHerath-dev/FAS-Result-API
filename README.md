@@ -83,8 +83,10 @@ cp .env.example .env
 Edit `.env`:
 ```env
 GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-3.5-flash-lite
 ```
-*(Note: If no API key is provided, the system seamlessly uses the offline heuristic parser).*
+
+`GEMINI_MODEL` is optional and defaults to `gemini-3.5-flash-lite`. The CLI `--model` option or HTTP `model_name` form field takes precedence. If no API key is provided, the app uses the offline heuristic parser.
 
 ---
 
