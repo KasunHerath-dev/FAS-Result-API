@@ -30,7 +30,9 @@ def process_pdf_cli(
     pdf_path: str,
     output_dir: str = "exports",
     model_name: str | None = None,
-    ocr_dpi: int = 300
+    ocr_dpi: int = 300,
+    offline: bool = False,
+    review_file: str | None = None,
 ):
     """Executes the extraction and export pipeline on a target PDF."""
     from api.services.orchestrator import PipelineOrchestrator
@@ -45,10 +47,11 @@ def process_pdf_cli(
         output_dir=output_dir,
         model_name=model_name,
         ocr_dpi=ocr_dpi,
-        allow_offline_fallback=True
+        allow_offline_fallback=True,
+        offline=offline,
     )
 
-    result = orchestrator.process_pdf(path)
+    result = orchestrator.process_pdf(path, review_file=review_file)
 
     if result.success:
         print("\n" + "=" * 60)
@@ -65,6 +68,11 @@ def process_pdf_cli(
         print("\nGenerated CSV Files:")
         for name, file_path in result.exported_files.items():
             print(f"  * {name:15}: {file_path}")
+        warnings = [(page.page, warning) for page in result.pages for warning in page.warnings]
+        if warnings:
+            print(f"\nExtraction warnings ({len(warnings)}):")
+            for page, warning in warnings:
+                print(f"  * Page {page}: {warning}")
         print("=" * 60 + "\n")
     else:
         logger.error("Pipeline failed: %s", result.error_message)
@@ -109,6 +117,8 @@ def main():
     proc_parser.add_argument("-o", "--output-dir", default="exports", help="Export output directory")
     proc_parser.add_argument("-m", "--model", default=None, help="Gemini model name")
     proc_parser.add_argument("--dpi", type=int, default=300, help="DPI for scanning (default: 300)")
+    proc_parser.add_argument("--offline", action="store_true", help="Process locally without Gemini")
+    proc_parser.add_argument("--review", help="JSON file with reviewed OCR cells for this PDF")
 
     # Command: inspect
     insp_parser = subparsers.add_parser("inspect", help="Inspect PDF pages and detection modes")
@@ -123,7 +133,9 @@ def main():
             pdf_path=args.pdf_path,
             output_dir=args.output_dir,
             model_name=args.model,
-            ocr_dpi=args.dpi
+            ocr_dpi=args.dpi,
+            offline=args.offline,
+            review_file=args.review,
         )
     elif args.command == "inspect":
         inspect_pdf_cli(args.pdf_path)

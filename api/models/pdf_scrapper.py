@@ -4,7 +4,6 @@ Extracts raw text and table layouts from scanned and digital academic PDFs
 using low-RAM streaming generators and Tesseract OCR.
 """
 
-import os
 import gc
 import re
 import tempfile
@@ -14,6 +13,7 @@ import pypdf
 import pytesseract
 from pdf2image import convert_from_path
 from PIL import Image, ImageEnhance
+from .table_ocr import read_results_grid
 
 
 class PDFScrapperException(Exception):
@@ -118,7 +118,7 @@ class PDFScrapper:
             for page_idx in range(total_pages):
                 page_num = page_idx + 1
                 page = reader.pages[page_idx]
-                native_text = page.extract_text() or ""
+                native_text = page.extract_text(extraction_mode="layout") or ""
 
                 if len(native_text.strip()) >= self.min_native_char_count:
                     text = native_text
@@ -135,15 +135,23 @@ class PDFScrapper:
 
                     page_img = images[0]
                     try:
-                        text = self.extract_page_ocr(page_img)
-                        mode = "ocr"
+                        grid = read_results_grid(self.preprocess_image(page_img))
+                        if grid is None:
+                            text = self.extract_page_ocr(page_img)
+                            mode = "ocr"
+                        else:
+                            text = grid.model_dump_json()
+                            mode = "ocr-grid"
                     finally:
                         del page_img
                         del images
                         gc.collect()
 
                 # Detect if the page belongs to the Repeat Examination session
-                is_repeat = bool(re.search(r"(-Repeat|Repeat,|Repeat\s+Examination)", text, re.IGNORECASE))
+                is_repeat = (
+                    grid.repeat if mode == "ocr-grid"
+                    else bool(re.search(r"(-Repeat|Repeat,|Repeat\s+Examination)", text, re.IGNORECASE))
+                )
 
                 yield (page_num, mode, is_repeat, text)
 

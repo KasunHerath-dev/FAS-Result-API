@@ -7,12 +7,13 @@ Coordinates the end-to-end flow:
 import time
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, List
 from pydantic import BaseModel, Field
 
 from ..models.pdf_scrapper import PDFScrapper
-from ..models.ai_connector import AIConnector
+from ..models.ai_connector import AIConnector, PageExtractionReport
 from ..models.file_export import FileExporter
+from ..models.ocr_review import OCRReview
 from ..models.schemas import FASResultPayload
 
 logger = logging.getLogger("fas_result_api")
@@ -30,6 +31,7 @@ class PipelineResult(BaseModel):
     exported_files: Dict[str, str] = Field(default_factory=dict)
     execution_time_seconds: float
     error_message: Optional[str] = None
+    pages: list[PageExtractionReport] = Field(default_factory=list)
 
 
 class PipelineOrchestrator:
@@ -44,7 +46,8 @@ class PipelineOrchestrator:
         output_dir: str | Path = "exports",
         temp_dir: Optional[str | Path] = None,
         ocr_dpi: int = 300,
-        allow_offline_fallback: bool = True
+        allow_offline_fallback: bool = True,
+        offline: bool = False,
     ):
         self.output_dir = Path(output_dir)
         self.temp_dir = Path(temp_dir) if temp_dir else None
@@ -52,14 +55,16 @@ class PipelineOrchestrator:
         self.ai_connector = AIConnector(
             api_key=gemini_api_key,
             model_name=model_name,
-            allow_offline_fallback=allow_offline_fallback
+            allow_offline_fallback=allow_offline_fallback,
+            offline=offline,
         )
         self.file_exporter = FileExporter(output_dir=self.output_dir)
 
     def process_pdf(
         self,
         pdf_path: str | Path,
-        base_export_name: Optional[str] = None
+        base_export_name: Optional[str] = None,
+        review_file: str | Path | None = None,
     ) -> PipelineResult:
         """
         Executes the 5-phase pipeline for the given PDF:
@@ -86,7 +91,13 @@ class PipelineOrchestrator:
                 error_message=f"File not found: {path}"
             )
 
+        reports: list[PageExtractionReport] = []
+        total_pages = 0
         try:
+            if review_file:
+                review = OCRReview.for_pdf(Path(review_file), path)
+            else:
+                review = OCRReview.find_for_pdf(path, Path(__file__).resolve().parents[2] / "docs")
             logger.info("Phase 1 & 2: Starting PDF extraction for %s", path.name)
             with PDFScrapper(
                 pdf_path=path,
@@ -96,11 +107,16 @@ class PipelineOrchestrator:
                 total_pages = scrapper.get_page_count()
                 pages_data: List[tuple[int, str, bool, str]] = list(scrapper.stream_pages())
 
+            if review:
+                pages_data = review.apply(pages_data)
+                logger.info("Applied %d reviewed cells", len(review.cells))
             logger.info("Phase 3: Parsing text into structured models for %d pages", len(pages_data))
-            payload: FASResultPayload = self.ai_connector.process_text_stream(pages_data)
+            payload: FASResultPayload = self.ai_connector.process_text_stream(pages_data, reports)
 
             # Phase 4: Cohort metrics calculation
             students = payload.results_table
+            if not students:
+                raise ValueError("No student rows could be extracted.")
             reg_count = sum(1 for s in students if s.student_type == "Regular")
             rep_count = sum(1 for s in students if s.student_type == "Repeat")
             med_count = sum(1 for s in students if s.student_type == "Medical")
@@ -123,7 +139,8 @@ class PipelineOrchestrator:
                 medical_students=med_count,
                 total_catalogs=len(payload.course_module_tables),
                 exported_files={k: str(v) for k, v in export_paths.items()},
-                execution_time_seconds=elapsed
+                execution_time_seconds=elapsed,
+                pages=reports,
             )
 
         except Exception as e:
@@ -132,12 +149,13 @@ class PipelineOrchestrator:
             return PipelineResult(
                 success=False,
                 document_path=str(path),
-                total_pages=0,
+                total_pages=total_pages,
                 total_students=0,
                 regular_students=0,
                 repeat_students=0,
                 medical_students=0,
                 total_catalogs=0,
                 execution_time_seconds=elapsed,
-                error_message=str(e)
+                error_message=str(e),
+                pages=reports,
             )

@@ -8,8 +8,11 @@ Exports structured academic results into Excel-compatible UTF-8-BOM CSV files:
 
 import csv
 import os
+import tempfile
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import List, Dict, Union, Literal
+from typing import List, Dict, Union, TextIO
 from .schemas import FASResultPayload, CourseModuleCatalog, StudentRecord
 
 
@@ -29,6 +32,28 @@ class FileExporter:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+    @contextmanager
+    def _atomic_csv(self, filename: str, encoding: str) -> Iterator[TextIO]:
+        if Path(filename).name != filename or filename in {"", ".."} or "\\" in filename:
+            raise FileExporterException("Export filename must be a single filename.")
+        target_path = self.output_dir / filename
+
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=self.output_dir, suffix=".tmp", newline="", encoding=encoding,
+                delete=False,
+            ) as file:
+                temp_path = Path(file.name)
+                yield file
+            os.replace(temp_path, target_path)
+            temp_path = None
+        except Exception as exc:
+            raise FileExporterException(f"Failed to write {filename}: {exc}") from exc
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+
     def export_course_modules(
         self,
         catalogs: List[CourseModuleCatalog],
@@ -39,78 +64,63 @@ class FileExporter:
         Exports Table 1 (Course Modules) to CSV.
         Columns: Level, Semester, Combination, Course_Code, Title
         """
-        target_path = self.output_dir / filename
-        temp_path = target_path.with_suffix(".tmp")
-
-        try:
-            with open(temp_path, "w", newline="", encoding=encoding) as f:
-                writer = csv.writer(f)
-                writer.writerow(["Level", "Semester", "Combination", "Course_Code", "Title"])
-                for cat in catalogs:
-                    for mod in cat.modules:
-                        writer.writerow([
-                            cat.level,
-                            cat.semester,
-                            cat.combination,
-                            mod.course_code,
-                            mod.title
-                        ])
-            os.replace(temp_path, target_path)
-            return target_path
-        except Exception as e:
-            if temp_path.exists():
-                temp_path.unlink()
-            raise FileExporterException(f"Failed to export course modules: {e}") from e
+        with self._atomic_csv(filename, encoding) as f:
+            writer = csv.writer(f)
+            writer.writerow(["Level", "Semester", "Combination", "Course_Code", "Title"])
+            for cat in catalogs:
+                for mod in cat.modules:
+                    writer.writerow([
+                        cat.level,
+                        cat.semester,
+                        cat.combination,
+                        mod.course_code,
+                        mod.title
+                    ])
+        return self.output_dir / filename
 
     def export_results_wide(
         self,
         records: List[StudentRecord],
         filename: str = "results_wide.csv",
-        encoding: str = "utf-8-sig"
+        encoding: str = "utf-8-sig",
+        *,
+        course_codes: Iterable[str] = (),
     ) -> Path:
         """
         Pivots student results into dynamic course columns.
-        Columns: Index, Raw_Index, Combination, Level, Semester, Exam_Type, Student_Type, Attempt, [Courses...], Remarks
+        Include catalog codes supplied in course_codes even when they have no grades.
+        Columns: Index, Combination, Level, Semester, Exam_Type, Student_Type, Attempt, [Courses...], Remarks
         Strictly NO GPA.
         """
-        target_path = self.output_dir / filename
-        temp_path = target_path.with_suffix(".tmp")
+        all_courses = sorted(set(course_codes).union(
+            res.course_code for rec in records for res in rec.results
+        ))
+        headers = [
+            "Index", "Combination", "Level", "Semester",
+            "Exam_Type", "Student_Type", "Attempt", *all_courses, "Remarks"
+        ]
 
-        try:
-            # Collect unique course codes across records
-            all_courses = sorted(list({res.course_code for rec in records for res in rec.results}))
-            headers = [
-                "Index", "Raw_Index", "Combination", "Level", "Semester",
-                "Exam_Type", "Student_Type", "Attempt", *all_courses, "Remarks"
-            ]
-
-            with open(temp_path, "w", newline="", encoding=encoding) as f:
-                writer = csv.writer(f)
-                writer.writerow(headers)
-
-                for rec in records:
-                    grade_map = {res.course_code: res.grade for res in rec.results}
-                    course_grades = [grade_map.get(c, "-") for c in all_courses]
-                    row = [
-                        rec.clean_index,
-                        rec.raw_index,
-                        rec.combination,
-                        rec.level,
-                        rec.semester,
-                        rec.exam_type,
-                        rec.student_type,
-                        rec.attempt,
-                        *course_grades,
-                        rec.remarks or ""
-                    ]
-                    writer.writerow(row)
-
-            os.replace(temp_path, target_path)
-            return target_path
-        except Exception as e:
-            if temp_path.exists():
-                temp_path.unlink()
-            raise FileExporterException(f"Failed to export wide results: {e}") from e
+        with self._atomic_csv(filename, encoding) as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+            for rec in records:
+                grade_map = {
+                    res.course_code: res.grade.strip()
+                    for res in rec.results if res.grade.strip() != "-"
+                }
+                course_grades = [grade_map.get(code, "") for code in all_courses]
+                writer.writerow([
+                    rec.raw_index or rec.clean_index,
+                    rec.combination,
+                    rec.level,
+                    rec.semester,
+                    rec.exam_type,
+                    rec.student_type,
+                    rec.attempt,
+                    *course_grades,
+                    rec.remarks or ""
+                ])
+        return self.output_dir / filename
 
     def export_results_long(
         self,
@@ -122,40 +132,31 @@ class FileExporter:
         Exports student results in normalized relational rows.
         Excludes un-enrolled course hyphens.
         """
-        target_path = self.output_dir / filename
-        temp_path = target_path.with_suffix(".tmp")
+        headers = [
+            "Index", "Combination", "Level", "Semester",
+            "Exam_Type", "Student_Type", "Attempt", "Course_Code", "Grade"
+        ]
 
-        try:
-            headers = [
-                "Index", "Raw_Index", "Combination", "Level", "Semester",
-                "Exam_Type", "Student_Type", "Attempt", "Course_Code", "Grade"
-            ]
-
-            with open(temp_path, "w", newline="", encoding=encoding) as f:
-                writer = csv.writer(f)
-                writer.writerow(headers)
-
-                for rec in records:
-                    for res in rec.results:
-                        writer.writerow([
-                            rec.clean_index,
-                            rec.raw_index,
-                            rec.combination,
-                            rec.level,
-                            rec.semester,
-                            rec.exam_type,
-                            rec.student_type,
-                            rec.attempt,
-                            res.course_code,
-                            res.grade
-                        ])
-
-            os.replace(temp_path, target_path)
-            return target_path
-        except Exception as e:
-            if temp_path.exists():
-                temp_path.unlink()
-            raise FileExporterException(f"Failed to export long results: {e}") from e
+        with self._atomic_csv(filename, encoding) as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+            for rec in records:
+                for res in rec.results:
+                    grade = res.grade.strip()
+                    if grade in {"", "-", "UNREAD"}:
+                        continue
+                    writer.writerow([
+                        rec.raw_index or rec.clean_index,
+                        rec.combination,
+                        rec.level,
+                        rec.semester,
+                        rec.exam_type,
+                        rec.student_type,
+                        rec.attempt,
+                        res.course_code,
+                        grade
+                    ])
+        return self.output_dir / filename
 
     def export_all(
         self,
@@ -170,7 +171,12 @@ class FileExporter:
             ),
             "results_wide": self.export_results_wide(
                 payload.results_table,
-                f"{base_name}_results_wide.csv"
+                f"{base_name}_results_wide.csv",
+                course_codes=(
+                    module.course_code
+                    for catalog in payload.course_module_tables
+                    for module in catalog.modules
+                ),
             ),
             "results_long": self.export_results_long(
                 payload.results_table,

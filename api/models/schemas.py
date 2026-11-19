@@ -15,8 +15,8 @@ def parse_student_index(raw_index: str, is_repeat_section: bool = False) -> Tupl
     Parses a raw index/registration string into its normalized components:
       - clean_index: Base registration number (e.g. '222002', '172149')
       - student_type: 'Regular', 'Repeat', or 'Medical'
-      - attempt: Sitting attempt number (1 for regular/medical, count('R') + 1 for repeat)
-      - is_medical: True if suffix contains 'M' or 'M.'
+      - attempt: Sitting attempt number (one plus the number of R markers)
+      - is_medical: True for M, M., and combined repeat/medical suffixes
     
     Examples:
       '232004'        -> ('232004', 'Regular', 1, False)
@@ -24,14 +24,15 @@ def parse_student_index(raw_index: str, is_repeat_section: bool = False) -> Tupl
       '172149RRRRRR'  -> ('172149', 'Repeat', 7, False)
       '222039M.'      -> ('222039', 'Medical', 1, True)
       '222045M'       -> ('222045', 'Medical', 1, True)
+      '222255R/M'     -> ('222255', 'Medical', 2, True)
     """
     raw = raw_index.strip()
     
     # Check for medical excuse suffix: M or M.
-    med_match = re.search(r"^(\d+)[mM]\.?$", raw)
+    med_match = re.fullmatch(r"(\d+)(?:([rR]+)/)?[mM]\.?", raw)
     if med_match:
         base_id = med_match.group(1)
-        return (base_id, "Medical", 1, True)
+        return (base_id, "Medical", len(med_match.group(2) or "") + 1, True)
         
     # Check for repeat suffix: one or more 'R's
     rep_match = re.search(r"^(\d+)([rR]+)$", raw)
