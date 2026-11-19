@@ -9,7 +9,9 @@
 | 12–16 | Repeat examination | 83 | 196 |
 | **එකතුව** | | **265** | **1,588** |
 
-Repeat examination rows 83 අතර Repeat ලෙස වර්ග කළ records 76ක් සහ Medical records 7ක් තිබෙනවා. Medical records 5ක මුද්‍රිත index එකේ `R/M` හෝ `RR/M` වැනි suffix එකක් තිබෙනවා. Wide සහ Long CSV දෙකේම එක `Index` column එකක් තියෙනවා. එහි මුද්‍රිත අංකය සහ suffix එක තබා, `Attempt` එකේ R ගණන අනුව attempt එක ලියනවා.
+Repeat examination rows 83 අතර Repeat ලෙස වර්ග කළ records 76ක් සහ Medical records 7ක් තිබෙනවා. Medical records 5ක මුද්‍රිත index එකේ `R/M` හෝ `RR/M` වැනි suffix එකක් තිබෙනවා. Wide සහ Long CSV දෙකේම `Index` එකේ මුද්‍රිත අංකය සහ suffix එකත්, `Base_Index` එකේ අකුරු රහිත මූලික අංකයත් තියෙනවා. `Attempt` එකේ R ගණන අනුව attempt එක ලියනවා.
+
+CSV තුනේම `Academic_Year`, `Level` සහ `Semester` තියෙනවා. මේ PDF එකේ අගයන් `2023/2024`, `Level 2`, `Semester II`. Default filenames `AY-2023-2024_Level-2_Semester-II_` වලින් පටන් ගන්නවා. එකම PDF නමෙන් ඊළඟ academic year එක export කළත් එයට වෙනම filename ලැබෙනවා.
 
 ## මුල් flow එකේ දත්ත හැලුණු තැන්
 
@@ -42,13 +44,13 @@ Grid එක නොහඳුනාගත් text pages සඳහා configured Ge
 
 ## ගොනු සහ නැවත ධාවනය
 
-- [Wide CSV](exports/verified/L2S2-Results-Ac.-2023-2024_results_wide.csv)
-- [Long CSV](exports/verified/L2S2-Results-Ac.-2023-2024_results_long.csv)
-- [Modules CSV](exports/verified/L2S2-Results-Ac.-2023-2024_modules.csv)
+- [Wide CSV](exports/AY-2023-2024_Level-2_Semester-II_L2S2-Results-Ac.-2023-2024_results_wide.csv)
+- [Long CSV](exports/AY-2023-2024_Level-2_Semester-II_L2S2-Results-Ac.-2023-2024_results_long.csv)
+- [Modules CSV](exports/AY-2023-2024_Level-2_Semester-II_L2S2-Results-Ac.-2023-2024_modules.csv)
 - [PDF එකට අදාළ OCR review JSON](docs/L2S2-Results-Ac.-2023-2024-review.json)
 
 ```bash
-uv run python main.py process docs/L2S2-Results-Ac.-2023-2024.pdf --offline -o exports/verified
+uv run python main.py process docs/L2S2-Results-Ac.-2023-2024.pdf --offline
 ```
 
 මේ PDF එකේ නමින් `docs/` තුළ තිබෙන review JSON එක PDF fingerprint එක ගැළපෙන විට ස්වයංක්‍රීයව යෙදෙනවා. වෙනත් review file එකක් තෝරන්න CLI එකේ `--review` භාවිත කරන්න. API එකේ `POST /api/v1/extract-results` වෙත `file`, `offline=true` සහ අවශ්‍ය නම් review JSON එක `review` ලෙස multipart form එකෙන් දෙන්න. Response එකේ CSV filenames, එක් එක් පිටුවේ rows ගණන සහ warnings තිබෙනවා. එක් එක් CSV එක `GET /api/v1/download/{filename}` හරහා ගන්න පුළුවන්.

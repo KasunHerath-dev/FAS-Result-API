@@ -88,8 +88,7 @@ async def extract_results(
             offline=offline,
         )
 
-        stem = base_export_name or uploaded_pdf_path.stem
-        result = orchestrator.process_pdf(uploaded_pdf_path, base_export_name=stem, review_file=review_path)
+        result = orchestrator.process_pdf(uploaded_pdf_path, base_export_name=base_export_name, review_file=review_path)
 
         if not result.success:
             raise HTTPException(status_code=500, detail=result.error_message or "Extraction failed.")

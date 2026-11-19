@@ -5,7 +5,9 @@ Coordinates the end-to-end flow:
 """
 
 import time
+import hashlib
 import logging
+import re
 from pathlib import Path
 from typing import Optional, Dict, List
 from pydantic import BaseModel, Field
@@ -19,6 +21,26 @@ from ..models.schemas import FASResultPayload
 logger = logging.getLogger("fas_result_api")
 
 
+def _default_export_stem(pdf: Path, payload: FASResultPayload) -> str:
+    periods = {
+        (record.academic_year or payload.academic_year, record.level, record.semester)
+        for record in [*payload.results_table, *payload.course_module_tables]
+    }
+    source = pdf.stem.replace(" ", "_")
+    if len(periods) == 1:
+        year, level, semester = next(iter(periods))
+        period = f"AY-{year or 'Unknown'}_{level or 'Level-Unknown'}_{semester or 'Semester-Unknown'}"
+        period = re.sub(r"[^A-Za-z0-9_-]+", "-", period)
+        if year and level and semester:
+            return f"{period}_{source}"
+    else:
+        period = "Multiple-Periods"
+    # Incomplete or mixed metadata alone may identify several PDFs with the same name.
+    with pdf.open("rb") as file:
+        fingerprint = hashlib.file_digest(file, "sha256").hexdigest()[:12]
+    return f"{period}_{source}_{fingerprint}"
+
+
 class PipelineResult(BaseModel):
     success: bool
     document_path: str
@@ -28,6 +50,7 @@ class PipelineResult(BaseModel):
     repeat_students: int
     medical_students: int
     total_catalogs: int
+    academic_year: str | None = None
     exported_files: Dict[str, str] = Field(default_factory=dict)
     execution_time_seconds: float
     error_message: Optional[str] = None
@@ -123,7 +146,7 @@ class PipelineOrchestrator:
 
             # Phase 5: Exporting CSV artifacts
             logger.info("Phase 5: Exporting dual-table CSV files")
-            export_stem = base_export_name or path.stem.replace(" ", "_")
+            export_stem = base_export_name or _default_export_stem(path, payload)
             export_paths = self.file_exporter.export_all(payload, base_name=export_stem)
 
             elapsed = round(time.time() - start_time, 2)
@@ -138,6 +161,7 @@ class PipelineOrchestrator:
                 repeat_students=rep_count,
                 medical_students=med_count,
                 total_catalogs=len(payload.course_module_tables),
+                academic_year=payload.academic_year,
                 exported_files={k: str(v) for k, v in export_paths.items()},
                 execution_time_seconds=elapsed,
                 pages=reports,

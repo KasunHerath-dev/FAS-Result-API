@@ -59,6 +59,7 @@ class CourseModule(BaseModel):
 
 
 class CourseModuleCatalog(BaseModel):
+    academic_year: Optional[str] = Field(default=None, description="Academic year printed on the results, e.g. '2024/2025'")
     level: str = Field(description="Academic Level, e.g. 'Level 2'")
     semester: str = Field(description="Semester designation, e.g. 'Semester II'")
     combination: str = Field(description="Combination identifier, e.g. 'Combination I', 'Combination III', or 'All (Repeat)'")
@@ -80,8 +81,9 @@ class StudentRecord(BaseModel):
     raw_index: str = Field(description="Verbatim index/registration number from the sheet, e.g. '222002R', '172149RRRRRR', '222039M.'")
     clean_index: str = Field(description="Base student index number without repeat/medical suffixes, e.g. '222002', '172149'")
     combination: str = Field(description="Combination name or number, e.g. 'Combination I', 'Combination III', or '1', '3'")
-    level: str = Field(default="Level 2", description="Academic level, e.g. 'Level 2'")
-    semester: str = Field(default="Semester II", description="Semester, e.g. 'Semester II'")
+    academic_year: Optional[str] = Field(default=None, description="Academic year printed on the results, e.g. '2024/2025'")
+    level: str = Field(default="", description="Academic level, e.g. 'Level 2'")
+    semester: str = Field(default="", description="Semester, e.g. 'Semester II'")
     exam_type: Literal["Regular", "Repeat"] = Field(default="Regular", description="Regular vs. Repeat examination session")
     student_type: Literal["Regular", "Repeat", "Medical"] = Field(
         default="Regular",
@@ -104,7 +106,7 @@ class StudentRecord(BaseModel):
 class FASResultPayload(BaseModel):
     faculty: str = Field(default="Faculty of Applied Sciences", description="Faculty name")
     university: str = Field(default="Wayamba University of Sri Lanka", description="University name")
-    academic_year: Optional[str] = Field(default="2023/2024", description="Academic Year")
+    academic_year: Optional[str] = Field(default=None, description="Academic year when shared by the whole document")
     course_module_tables: List[CourseModuleCatalog] = Field(
         default_factory=list,
         description="Dynamic Course Module Catalogs partitioned by Level, Semester, and Combination"

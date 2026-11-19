@@ -26,6 +26,29 @@ logger = logging.getLogger(__name__)
 COMBINATIONS = {"1": "I", "2": "II", "3": "III"}
 
 
+def _academic_period(text: str) -> tuple[str | None, str, str]:
+    year_match = re.search(
+        r"\bAcademic\s+Year\b\s*[:(]?\s*(\d{4})(?:\s*[/–-]\s*(\d{4}|\d{2}))?\b",
+        text, re.I,
+    )
+    year = None
+    if year_match:
+        start, end = year_match.groups()
+        if end and len(end) == 2:
+            end = str(int(start) + (int(end) - int(start[-2:])) % 100)
+        year = f"{start}/{end}" if end else start
+
+    period = re.search(
+        r"\bLevel\s*:?\s*(\d+)\s*[,–-]?\s*Semester\s*:?\s*(\d+|[IVXT1|\]]+)(?=[\s.,;(:/–-]|$)",
+        text, re.I,
+    )
+    if not period:
+        return year, "", ""
+    value = period[2].upper()
+    semester = {"1": "I", "2": "II", "3": "III"}.get(value, value.translate(str.maketrans("T1|]", "IIII")))
+    return year, f"Level {period[1]}", f"Semester {semester}"
+
+
 class PageExtractionReport(BaseModel):
     page: int
     source: str
@@ -74,6 +97,8 @@ class AIConnector:
         return (
             "You are an academic data parsing engine for the Faculty of Applied Sciences, Wayamba University of Sri Lanka.\n"
             "Your objective is to extract TWO distinct tables from the raw OCR result text:\n\n"
+            "Use the academic year printed in the heading, separately from the examination date. "
+            "Leave the year, level, or semester unset or empty if the text does not identify it.\n"
             "TABLE 1: DYNAMIC COURSE MODULE CATALOG\n"
             "- Extract Course Codes (e.g. CMIS2214, ELTN2213, MATH2213, STAT2212, ELPC 2220) and Course Titles from table headers.\n"
             "- CRITICAL: Course modules change dynamically for each Level, Semester, and Combination:\n"
@@ -129,21 +154,12 @@ class AIConnector:
         """
         lines = [line.strip() for line in text.splitlines() if line.strip()]
 
-        level = "Level 2"
-        semester = "Semester II"
-        academic_year = "2023/2024"
+        academic_year, level, semester = _academic_period("\n".join(lines[:15]))
         combination = "Combination I"
         is_repeat_section = is_repeat_default
 
         # 1. Detect Header Metadata
         for line in lines[:15]:
-            lvl_match = re.search(r"Level\s*(\d+)\s*Semester\s*([IVX]+)", line, re.IGNORECASE)
-            if lvl_match:
-                level = f"Level {lvl_match.group(1)}"
-                semester = f"Semester {lvl_match.group(2)}"
-            ay_match = re.search(r"Academic Year\s*([\d/]+)", line, re.IGNORECASE)
-            if ay_match:
-                academic_year = ay_match.group(1)
             if "Repeat" in line:
                 is_repeat_section = True
             comb_match = re.search(r"Combination\s*([IVX\d]+)", line, re.IGNORECASE)
@@ -260,15 +276,16 @@ class AIConnector:
         self, pages: List[Tuple[int, str, bool, str]], reports: list[PageExtractionReport] | None = None,
     ) -> FASResultPayload:
         """Process each page independently and preserve the source order of ruled rows."""
-        catalogs: dict[tuple[str, str, str], dict[str, str]] = {}
+        page_catalogs: list[CourseModuleCatalog] = []
         students: list[StudentRecord] = []
-        academic_year = None
+        years: set[str] = set()
         combination = ""
-        previous_serials: dict[tuple[str, str, str], int] = {}
+        previous_serials: dict[tuple[str | None, str, str, str], int] = {}
 
         for page, mode, repeat, text in pages:
             warnings = []
             table_rows = None
+            source_year = None
             source = "offline text"
             if mode == "ocr-grid":
                 grid = GridPage.model_validate_json(text)
@@ -282,6 +299,7 @@ class AIConnector:
                 payload = self._parse_grid(grid, repeat, combination, previous_serials)
             else:
                 offline = self.parse_with_heuristics(text, is_repeat_default=repeat)
+                source_year = offline.academic_year
                 payload = offline
                 if self.client:
                     try:
@@ -301,13 +319,12 @@ class AIConnector:
                 if source == "offline text":
                     warnings.append("Plain-text extraction cannot verify row boundaries or grade alignment.")
 
-            if payload.academic_year:
-                academic_year = payload.academic_year
-            for catalog in payload.course_module_tables:
-                key = (catalog.level, catalog.semester, catalog.combination)
-                courses = catalogs.setdefault(key, {})
-                for module in catalog.modules:
-                    courses.setdefault(module.course_code, module.title)
+            page_year = source_year or payload.academic_year
+            for record in [*payload.course_module_tables, *payload.results_table]:
+                record.academic_year = page_year or record.academic_year
+                if record.academic_year:
+                    years.add(record.academic_year)
+            page_catalogs.extend(payload.course_module_tables)
             students.extend(payload.results_table)
             if not payload.results_table:
                 warnings.append("No student records were extracted from this page.")
@@ -318,31 +335,35 @@ class AIConnector:
                 ))
             logger.info("Page %d: %s, %d student rows, %d warnings", page, source, len(payload.results_table), len(warnings))
 
+        academic_year = next(iter(years)) if len(years) == 1 else None
+        catalogs: dict[tuple[str | None, str, str, str], dict[str, str]] = {}
+        for catalog in page_catalogs:
+            key = (catalog.academic_year or academic_year, catalog.level, catalog.semester, catalog.combination)
+            courses = catalogs.setdefault(key, {})
+            for module in catalog.modules:
+                courses.setdefault(module.course_code, module.title)
         return FASResultPayload(
             academic_year=academic_year,
             course_module_tables=[
                 CourseModuleCatalog(
-                    level=level, semester=semester, combination=cohort,
+                    academic_year=year, level=level, semester=semester, combination=cohort,
                     modules=[CourseModule(course_code=code, title=title) for code, title in modules.items()],
                 )
-                for (level, semester, cohort), modules in catalogs.items()
+                for (year, level, semester, cohort), modules in catalogs.items()
             ],
             results_table=students,
         )
 
     def _parse_grid(
         self, grid: GridPage, repeat: bool, combination: str,
-        previous_serials: dict[tuple[str, str, str], int],
+        previous_serials: dict[tuple[str | None, str, str, str], int],
     ) -> FASResultPayload:
-        period = re.search(r"Level\s*(\d+)\s+Semester\s*([IVXT1|\]]+)(?=\s)", grid.heading, re.I)
-        year = re.search(r"Academic Year\s*(\d{4}\s*/\s*\d{4})", grid.heading, re.I)
-        level = f"Level {period[1]}" if period else ""
-        semester = f"Semester {period[2].upper().translate(str.maketrans('T1|]', 'IIII'))}" if period else ""
+        year, level, semester = _academic_period(grid.heading)
         cohort = "All (Repeat)" if repeat else combination
-        if not period or not cohort:
+        if not level or not cohort:
             grid.warnings.append("The level, semester, or combination header could not be verified.")
 
-        serial_key = (level, semester, cohort)
+        serial_key = (year, level, semester, cohort)
         previous_serial = previous_serials.get(serial_key, 0)
         students = []
         for row in grid.rows:
@@ -370,7 +391,7 @@ class AIConnector:
             ))
         previous_serials[serial_key] = previous_serial
         return FASResultPayload(
-            academic_year=re.sub(r"\s+", "", year[1]) if year else None,
+            academic_year=year,
             course_module_tables=[CourseModuleCatalog(
                 level=level, semester=semester, combination=cohort,
                 modules=[CourseModule(course_code=code, title=title) for code, title in grid.courses],

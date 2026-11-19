@@ -9,6 +9,7 @@ from api.models.file_export import FileExporter
 from api.models.ocr_review import OCRReview
 from api.models.schemas import FASResultPayload
 from api.models.table_ocr import GridPage, GridRow
+from api.services import orchestrator
 
 
 def grid(heading, rows, repeat=False, courses=None, warnings=None):
@@ -51,10 +52,13 @@ def test_grid_keeps_missing_cells_and_every_sitting(tmp_path):
     assert wide[0]["TEST1235"] == "C+"
     assert wide[2]["Index"] == "000001RR/M"
     assert long[1]["Index"] == "000001RR/M"
+    assert wide[0]["Base_Index"] == wide[2]["Base_Index"] == "000001"
+    assert long[0]["Base_Index"] == long[1]["Base_Index"] == "000001"
     assert "Raw_Index" not in wide[0] and "Raw_Index" not in long[0]
     assert wide[2]["Student_Type"] == "Medical"
     assert wide[2]["Attempt"] == "3"
     assert wide[2]["Semester"] == "Semester II"
+    assert wide[0]["Academic_Year"] == ""
     assert [(row["Course_Code"], row["Grade"]) for row in long] == [("TEST1235", "C+"), ("TEST1234", "I")]
     assert [report.table_rows for report in reports] == [2, 1]
     assert not any(report.warnings for report in reports)
@@ -116,3 +120,50 @@ def test_gemini_valid_json_and_incomplete_page_fallback():
     assert len(parsed.results_table) == 2
     assert reports[0].source == "offline text"
     assert "omitted rows" in reports[0].warnings[0]
+
+
+def test_next_batch_with_same_pdf_name_gets_its_own_exports(tmp_path, monkeypatch):
+    pdf = tmp_path / "results.pdf"
+    output = tmp_path / "exports"
+
+    class Scrapper:
+        def __init__(self, pdf_path, **kwargs):
+            self.heading = pdf_path.read_text()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exception):
+            pass
+
+        def get_page_count(self):
+            return 1
+
+        def stream_pages(self):
+            yield page(1, grid(self.heading, [dict(serial="1", index="000001", grades=["A", ""])]))
+
+    monkeypatch.setattr(orchestrator, "PDFScrapper", Scrapper)
+    pipeline = orchestrator.PipelineOrchestrator(offline=True, output_dir=output)
+    for year in ("2023/2024", "2024/2025"):
+        pdf.write_text(f"Level 2 Semester 2 (Academic Year: {year}) Combination I")
+        result = pipeline.process_pdf(pdf)
+        assert result.success, result.error_message
+        assert result.academic_year == year
+        assert all(f"AY-{year.replace('/', '-')}_Level-2_Semester-II_results_" in path
+                   for path in result.exported_files.values())
+        for path in output.glob(f"AY-{year.replace('/', '-')}_*.csv"):
+            assert {row["Academic_Year"] for row in read_csv(path)} == {year}
+    assert len(list(output.glob("*.csv"))) == 6
+
+
+def test_combined_pdf_preserves_academic_year_per_page(tmp_path):
+    pages = []
+    for number, year in enumerate(("2023/2024", "2024-25"), 1):
+        heading = f"Level 3 Semester I (Academic Year {year}) Combination I"
+        pages.append(page(number, grid(heading, [dict(serial="1", index="000001", grades=["A", ""])])))
+    payload = AIConnector(offline=True).process_text_stream(pages)
+    paths = FileExporter(tmp_path).export_all(payload)
+
+    assert payload.academic_year is None
+    for table in ("course_modules", "results_wide", "results_long"):
+        assert {row["Academic_Year"] for row in read_csv(paths[table])} == {"2023/2024", "2024/2025"}

@@ -58,6 +58,7 @@ def process_pdf_cli(
         print("EXTRACTION & EXPORT SUMMARY")
         print("=" * 60)
         print(f"Document:          {result.document_path}")
+        print(f"Academic Year:     {result.academic_year or 'See CSV academic periods'}")
         print(f"Total Pages:       {result.total_pages}")
         print(f"Total Students:    {result.total_students}")
         print(f" - Regular:        {result.regular_students}")

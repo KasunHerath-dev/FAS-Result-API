@@ -24,7 +24,7 @@ class FileExporterException(Exception):
 class FileExporter:
     """
     Standardized CSV exporter producing:
-      1. Dynamic Course Module Table (Level, Semester, Combination, Course Code, Title)
+      1. Dynamic Course Module Table (Academic Year, Level, Semester, Combination, Course Code, Title)
       2. Student Results Table (Wide & Long layouts, strictly without GPA)
     """
 
@@ -58,18 +58,21 @@ class FileExporter:
         self,
         catalogs: List[CourseModuleCatalog],
         filename: str = "course_modules.csv",
-        encoding: str = "utf-8-sig"
+        encoding: str = "utf-8-sig",
+        *,
+        academic_year: str | None = None,
     ) -> Path:
         """
         Exports Table 1 (Course Modules) to CSV.
-        Columns: Level, Semester, Combination, Course_Code, Title
+        Columns: Academic_Year, Level, Semester, Combination, Course_Code, Title
         """
         with self._atomic_csv(filename, encoding) as f:
             writer = csv.writer(f)
-            writer.writerow(["Level", "Semester", "Combination", "Course_Code", "Title"])
+            writer.writerow(["Academic_Year", "Level", "Semester", "Combination", "Course_Code", "Title"])
             for cat in catalogs:
                 for mod in cat.modules:
                     writer.writerow([
+                        cat.academic_year or academic_year,
                         cat.level,
                         cat.semester,
                         cat.combination,
@@ -85,18 +88,20 @@ class FileExporter:
         encoding: str = "utf-8-sig",
         *,
         course_codes: Iterable[str] = (),
+        academic_year: str | None = None,
     ) -> Path:
         """
         Pivots student results into dynamic course columns.
         Include catalog codes supplied in course_codes even when they have no grades.
-        Columns: Index, Combination, Level, Semester, Exam_Type, Student_Type, Attempt, [Courses...], Remarks
+        Columns: Index, Base_Index, Combination, Academic_Year, Level, Semester, Exam_Type,
+        Student_Type, Attempt, [Courses...], Remarks
         Strictly NO GPA.
         """
         all_courses = sorted(set(course_codes).union(
             res.course_code for rec in records for res in rec.results
         ))
         headers = [
-            "Index", "Combination", "Level", "Semester",
+            "Index", "Base_Index", "Combination", "Academic_Year", "Level", "Semester",
             "Exam_Type", "Student_Type", "Attempt", *all_courses, "Remarks"
         ]
 
@@ -111,7 +116,9 @@ class FileExporter:
                 course_grades = [grade_map.get(code, "") for code in all_courses]
                 writer.writerow([
                     rec.raw_index or rec.clean_index,
+                    rec.clean_index if rec.clean_index.isdecimal() else "",
                     rec.combination,
+                    rec.academic_year or academic_year,
                     rec.level,
                     rec.semester,
                     rec.exam_type,
@@ -126,14 +133,16 @@ class FileExporter:
         self,
         records: List[StudentRecord],
         filename: str = "results_long.csv",
-        encoding: str = "utf-8-sig"
+        encoding: str = "utf-8-sig",
+        *,
+        academic_year: str | None = None,
     ) -> Path:
         """
         Exports student results in normalized relational rows.
         Excludes un-enrolled course hyphens.
         """
         headers = [
-            "Index", "Combination", "Level", "Semester",
+            "Index", "Base_Index", "Combination", "Academic_Year", "Level", "Semester",
             "Exam_Type", "Student_Type", "Attempt", "Course_Code", "Grade"
         ]
 
@@ -147,7 +156,9 @@ class FileExporter:
                         continue
                     writer.writerow([
                         rec.raw_index or rec.clean_index,
+                        rec.clean_index if rec.clean_index.isdecimal() else "",
                         rec.combination,
+                        rec.academic_year or academic_year,
                         rec.level,
                         rec.semester,
                         rec.exam_type,
@@ -167,7 +178,8 @@ class FileExporter:
         return {
             "course_modules": self.export_course_modules(
                 payload.course_module_tables,
-                f"{base_name}_modules.csv"
+                f"{base_name}_modules.csv",
+                academic_year=payload.academic_year,
             ),
             "results_wide": self.export_results_wide(
                 payload.results_table,
@@ -177,9 +189,11 @@ class FileExporter:
                     for catalog in payload.course_module_tables
                     for module in catalog.modules
                 ),
+                academic_year=payload.academic_year,
             ),
             "results_long": self.export_results_long(
                 payload.results_table,
-                f"{base_name}_results_long.csv"
+                f"{base_name}_results_long.csv",
+                academic_year=payload.academic_year,
             )
         }

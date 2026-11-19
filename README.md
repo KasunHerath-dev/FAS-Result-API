@@ -14,8 +14,8 @@ An automated, memory-efficient data extraction, AI structuring, and tabular expo
   - Parses ruled tables locally. Gemini can structure pages that use the text extraction path.
   - Includes an offline text parser when Gemini is disabled or unavailable.
 - **Dual-Table Architecture**:
-  1. **Course Module Table (Dynamic Master Catalog)**: Captures **Course Code** and **Course Title**, dynamically varying for each **Level**, **Semester**, and **Combination**.
-  2. **Student Results Table (Transactional Mark Sheet)**: CSV exports use one **Index** column with the printed registration number and any repeat or medical suffix. The table also includes **Combination**, **Level**, **Semester**, **Exam Type**, **Student Type**, **Attempt Count**, and **Course Unit Grades**.
+  1. **Course Module Table (Dynamic Master Catalog)**: Captures **Course Code** and **Course Title** for each **Academic Year**, **Level**, **Semester**, and **Combination**.
+  2. **Student Results Table (Transactional Mark Sheet)**: CSV exports keep the printed registration number and any repeat or medical suffix in **Index**. **Base_Index** contains the registration digits, including leading zeros. The table also includes **Combination**, **Academic Year**, **Level**, **Semester**, **Exam Type**, **Student Type**, **Attempt Count**, and **Course Unit Grades**.
 - **No GPA Column**: Adheres strictly to official FAS semester result sheets which do not compute or publish GPA.
 - **Repeat & Medical Students**:
   - Automatically identifies Repeat Examination sections (`-Repeat`).
@@ -125,20 +125,24 @@ Once the server is running on `http://localhost:8000`:
   - Optional form field `base_export_name`: Override the CSV filename prefix.
   - Optional form field `offline`: Set to `true` for local-only processing.
   - Optional file field `review`: Upload the cell review JSON for the PDF.
-  - Response: JSON summary with student metrics, generated CSV file paths, and per-page row counts and warnings.
+  - Response: JSON summary with the academic year when shared by the document, student metrics, generated CSV file paths, and per-page row counts and warnings.
 * Download Exported CSV: `GET /api/v1/download/{filename}`
 
 ---
 
 ## CSV Output
 
-Processing `results.pdf` writes the following files.
+All three CSVs include `Academic_Year`, `Level`, and `Semester`. The academic year comes from the result heading. Each recognised period stays on its own rows when a PDF covers multiple periods.
+
+By default, the filename starts with the academic year, level, and semester, followed by the original PDF stem. Processing `results.pdf` for academic year 2023/2024, Level 2, Semester II writes these files.
 
 | File | Contents |
 | --- | --- |
-| `results_modules.csv` | One row per module in each level, semester, and combination catalog. |
-| `results_results_wide.csv` | One row per student record. Course columns come from the catalogs and the extracted grades. Unenrolled courses and blank cells stay empty. A visible grade the OCR could not read appears as `UNREAD`. |
-| `results_results_long.csv` | One row per extracted course grade. Empty cells and unreadable placeholders are omitted. |
+| `AY-2023-2024_Level-2_Semester-II_results_modules.csv` | One row per module in each academic year, level, semester, and combination catalog. |
+| `AY-2023-2024_Level-2_Semester-II_results_results_wide.csv` | One row per student record. Course columns come from the catalogs and the extracted grades. Unenrolled courses and blank cells stay empty. A visible grade the OCR could not read appears as `UNREAD`. |
+| `AY-2023-2024_Level-2_Semester-II_results_results_long.csv` | One row per extracted course grade. Empty cells and unreadable placeholders are omitted. |
+
+Exports with incomplete or mixed periods include a PDF fingerprint in the default filename. Unidentified academic years stay empty in the CSV if the year cannot be shared across the document. The API's explicit `base_export_name` still sets the filename prefix.
 
 A successful export confirms that the pipeline wrote its parsed data. Check the
 student count and grades against the source PDF, especially after offline
